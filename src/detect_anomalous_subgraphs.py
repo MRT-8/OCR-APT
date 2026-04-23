@@ -26,6 +26,7 @@ import math
 import json
 from outliers import smirnov_grubbs as grubbs
 from scipy import stats
+from datasketch import MinHash, MinHashLSH
 
 
 def ensure_dir(file_path):
@@ -74,6 +75,8 @@ parser.add_argument('--construct-from-anomaly-subgraph', action="store_true", de
 parser.add_argument('--remove-duplicated-subgraph', action="store_true", default=True)
 parser.add_argument('--correlate-anomalous-once', action="store_true", default=True)
 parser.add_argument('--process-centric', action="store_true", default=False)
+parser.add_argument('--dedup-method', type=str, default='minhash', choices=['legacy', 'minhash', 'wlhash'],
+                    help="Subgraph dedup method: legacy=O(n^2), minhash=MinHash-LSH, wlhash=WL graph hash")
 
 args = parser.parse_args()
 assert args.dataset in ['tc3', 'optc', 'nodlink']
@@ -671,6 +674,64 @@ def remove_identicatl_subgraphs(subgraphs_lst):
     del subgraphs_lst
     return filtered_subgraphs_lst
 
+def remove_duplicate_subgraphs_minhash(subgraphs_lst, threshold=0.9, num_perm=128):
+    """Deduplicate subgraphs using MinHash-LSH, O(n) time complexity."""
+    if len(subgraphs_lst) <= 1:
+        return subgraphs_lst
+
+    lsh = MinHashLSH(threshold=threshold, num_perm=num_perm)
+    minhashes = []
+
+    for i, sg in enumerate(subgraphs_lst):
+        m = MinHash(num_perm=num_perm)
+        for u, v, data in sg.edges(data=True):
+            edge_key = data.get('ekey', '')
+            edge_str = f"{u}-{edge_key}-{v}"
+            m.update(edge_str.encode('utf8'))
+        minhashes.append(m)
+        try:
+            lsh.insert(f"sg_{i}", m)
+        except ValueError:
+            pass
+
+    remove_set = set()
+    for i in range(len(subgraphs_lst)):
+        if i in remove_set:
+            continue
+        try:
+            result = lsh.query(minhashes[i])
+        except Exception:
+            continue
+        for key in result:
+            j = int(key.split('_')[1])
+            if j != i and j not in remove_set:
+                if (subgraphs_lst[i].number_of_nodes() == subgraphs_lst[j].number_of_nodes() and
+                    subgraphs_lst[i].number_of_edges() == subgraphs_lst[j].number_of_edges()):
+                    remove_set.add(j)
+
+    filtered = [sg for i, sg in enumerate(subgraphs_lst) if i not in remove_set]
+    print(f"MinHash dedup: removed {len(remove_set)} duplicates, kept {len(filtered)}")
+    return filtered
+
+
+def remove_duplicate_subgraphs_wlhash(subgraphs_lst, iterations=3):
+    """Deduplicate subgraphs using Weisfeiler-Leman graph hash, O(n*E*iterations)."""
+    if len(subgraphs_lst) <= 1:
+        return subgraphs_lst
+
+    seen_hashes = {}
+    filtered = []
+    for i, sg in enumerate(subgraphs_lst):
+        h = nx.weisfeiler_lehman_graph_hash(sg, iterations=iterations)
+        if h not in seen_hashes:
+            seen_hashes[h] = i
+            filtered.append(sg)
+        else:
+            print(f"WL hash dedup: subgraph {i} is duplicate of {seen_hashes[h]}")
+
+    print(f"WL hash dedup: removed {len(subgraphs_lst) - len(filtered)} duplicates, kept {len(filtered)}")
+    return filtered
+
 def node_type_order(node_type):
     if node_type.lower() in ["flow","net","netflowobject"]:
         type_order = 1
@@ -752,7 +813,12 @@ def construct_subgraphs_by_criteria_from_anomaly_subgraph(run_start_time,number_
     print("The total traverse time is: ", time.time() - all_traverse_time, "seconds.")
     if args.remove_duplicated_subgraph:
         print("Number of subgraphs before removing duplication", len(subgraphs_lst))
-        subgraphs_lst = remove_identicatl_subgraphs(subgraphs_lst)
+        if args.dedup_method == 'minhash':
+            subgraphs_lst = remove_duplicate_subgraphs_minhash(subgraphs_lst)
+        elif args.dedup_method == 'wlhash':
+            subgraphs_lst = remove_duplicate_subgraphs_wlhash(subgraphs_lst)
+        else:
+            subgraphs_lst = remove_identicatl_subgraphs(subgraphs_lst)
 
     if len(subgraphs_lst) > 0:
         disconnected_nodes, subgraphs_stats_df, all_correlated_nodes,end_construction_time, anomaly_results_df_run = explore_and_draw_subgaphs(subgraphs_lst)
