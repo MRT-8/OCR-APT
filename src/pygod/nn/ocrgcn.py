@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 # from torch_geometric.nn import RGATConv, RGCNConv
 from .rgcn_conv import RGCNConv
+from .node_attribute_encoder import NodeAttributeEncoder
 torch.use_deterministic_algorithms(True)
 from numpy import sin, cos, pi, linspace
 from sklearn.decomposition import PCA
@@ -47,6 +48,16 @@ class OCRGCNBase(nn.Module):
         The number of epochs for warm-up training. Default: ``2``.
     eps : float, optional
         The slack variable. Default: ``0.001``.
+    use_node_attributes : bool, optional
+        Whether to use learnable node attribute embeddings. Default: ``False``.
+    attr_vocab_size : int, optional
+        Size of the attribute token vocabulary. Default: ``5000``.
+    attr_embed_dim : int, optional
+        Embedding dimension for attribute tokens. Default: ``32``.
+    max_path_tokens : int, optional
+        Maximum number of tokens per node attribute. Default: ``8``.
+    num_node_types : int, optional
+        Number of node types (process, file, flow, etc.). Default: ``3``.
     **kwargs
         Other parameters for the backbone model.
     """
@@ -65,6 +76,11 @@ class OCRGCNBase(nn.Module):
                  min_delta=0.01,
                  max_delta=0.2,
                  patience=5,
+                 use_node_attributes=False,
+                 attr_vocab_size=5000,
+                 attr_embed_dim=32,
+                 max_path_tokens=8,
+                 num_node_types=3,
                  **kwargs):
         super(OCRGCNBase, self).__init__()
 
@@ -97,27 +113,40 @@ class OCRGCNBase(nn.Module):
         self.last_validation_f1_score = 0
         self.last_validation_auc = 0
 
-        self.gnn = backbone(in_channels=in_dim,
+        # Step 1 (E): Independent parameters per layer
+        self.layers = nn.ModuleList()
+        self.layers.append(backbone(in_channels=in_dim,
                             out_channels=hid_dim,
                             num_relations=num_relations,
-                            **kwargs)
-        self.hidden_gnn = backbone(in_channels=hid_dim,
-                            out_channels=hid_dim,
-                            num_relations=num_relations,
-                            **kwargs)
+                            **kwargs))
+        for _ in range(num_layers - 1):
+            self.layers.append(backbone(in_channels=hid_dim,
+                                out_channels=hid_dim,
+                                num_relations=num_relations,
+                                **kwargs))
 
         self.r = 0
         self.c = torch.zeros(hid_dim)
 
         self.emb = None
 
-    def reset_layer_parameters(self,gnn):
-        for layer in gnn.children():
+        # Step 2 (F): Node attribute encoder
+        self.use_node_attributes = use_node_attributes
+        if use_node_attributes:
+            self.attr_encoder = NodeAttributeEncoder(
+                vocab_size=attr_vocab_size,
+                embed_dim=attr_embed_dim,
+                num_node_types=num_node_types,
+                output_dim=in_dim,
+                max_path_tokens=max_path_tokens
+            )
+
+    def reset_layer_parameters(self):
+        for layer in self.layers:
             if hasattr(layer, 'reset_parameters'):
                 layer.reset_parameters()
-        gnn.reset_parameters()
 
-    def forward(self, x, edge_index,edge_type):
+    def forward(self, x, edge_index, edge_type, token_ids=None, token_lengths=None, node_types_attr=None):
         """
         Forward computation.
 
@@ -127,18 +156,28 @@ class OCRGCNBase(nn.Module):
             Input attribute embeddings.
         edge_index : torch.Tensor
             Edge index.
-        edge_type
+        edge_type : torch.Tensor
+            Edge type tensor.
+        token_ids : torch.LongTensor, optional
+            Node attribute token IDs. Default: ``None``.
+        token_lengths : torch.LongTensor, optional
+            Number of valid tokens per node. Default: ``None``.
+        node_types_attr : torch.LongTensor, optional
+            Node type IDs for attribute encoding. Default: ``None``.
         Returns
         -------
         emb : torch.Tensor
             Output embeddings.
         """
+        if self.use_node_attributes and token_ids is not None:
+            attr_emb = self.attr_encoder(token_ids, token_lengths, node_types_attr)
+            x = x + attr_emb
 
-        emb = self.gnn(x, edge_index,edge_type)
-        for _ in range(self.num_layers - 1):
+        emb = self.layers[0](x, edge_index, edge_type)
+        for layer in self.layers[1:]:
             emb = self.act(emb)
             emb = self.dropout(emb)
-            emb = self.hidden_gnn(emb, edge_index, edge_type)
+            emb = layer(emb, edge_index, edge_type)
         self.emb = emb
 
         return self.emb
