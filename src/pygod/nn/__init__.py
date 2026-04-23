@@ -8,6 +8,7 @@ from .gae import GAEBase
 from .guide import GUIDEBase
 from .ocgnn import OCGNNBase
 from .ocrgcn import OCRGCNBase
+from .node_attribute_encoder import NodeAttributeEncoder
 from . import conv
 from . import decoder
 from . import encoder
@@ -15,5 +16,6 @@ from . import functional
 
 __all__ = [
     "AdONEBase", "AnomalyDAEBase", "CoLABase", "DOMINANTBase", "DONEBase",
-    "GAANBase", "GAEBase", "GUIDEBase", "OCGNNBase","OCRGCNBase"
+    "GAANBase", "GAEBase", "GUIDEBase", "OCGNNBase","OCRGCNBase",
+    "NodeAttributeEncoder"
 ]

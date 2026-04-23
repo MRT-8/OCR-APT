@@ -109,6 +109,11 @@ class OCRGCN(OCRAPT_DeepDetector):
                  save_emb=False,
                  compile_model=False,
                  visualize=False,
+                 use_node_attributes=False,
+                 attr_vocab_size=5000,
+                 attr_embed_dim=32,
+                 max_path_tokens=8,
+                 num_node_types=3,
                  **kwargs):
         super(OCRGCN, self).__init__(hid_dim=hid_dim,
                                      num_relations=num_relations,
@@ -134,6 +139,11 @@ class OCRGCN(OCRAPT_DeepDetector):
         self.eps = eps
         self.num_relations = num_relations
         self.visualize = visualize
+        self.use_node_attributes = use_node_attributes
+        self.attr_vocab_size = attr_vocab_size
+        self.attr_embed_dim = attr_embed_dim
+        self.max_path_tokens = max_path_tokens
+        self.num_node_types = num_node_types
 
     def process_graph(self, data):
         pass
@@ -153,6 +163,11 @@ class OCRGCN(OCRAPT_DeepDetector):
                          warmup=self.warmup,
                          eps=self.eps,
                          backbone=self.backbone,
+                         use_node_attributes=self.use_node_attributes,
+                         attr_vocab_size=self.attr_vocab_size,
+                         attr_embed_dim=self.attr_embed_dim,
+                         max_path_tokens=self.max_path_tokens,
+                         num_node_types=self.num_node_types,
                          **kwargs).to(self.device)
 
     def validate_model(self, data, visualize=False,fig_title=None):
@@ -162,7 +177,15 @@ class OCRGCN(OCRAPT_DeepDetector):
         edge_index = data.edge_index.to(self.device)
         edge_type = data.edge_attr.to(self.device)
 
-        emb = self.model(x, edge_index, edge_type)
+        token_ids = getattr(data, 'token_ids', None)
+        token_lengths = getattr(data, 'token_lengths', None)
+        node_types_attr = getattr(data, 'node_types_attr', None)
+        if token_ids is not None:
+            token_ids = token_ids.to(self.device)
+            token_lengths = token_lengths.to(self.device)
+            node_types_attr = node_types_attr.to(self.device)
+
+        emb = self.model(x, edge_index, edge_type, token_ids, token_lengths, node_types_attr)
         loss, score = self.model.loss_func(emb[data.active_mask, :], train=False)
 
         current_threshold = np.percentile(score.detach().cpu(), 100 * (1 - self.contamination))
@@ -178,7 +201,15 @@ class OCRGCN(OCRAPT_DeepDetector):
         edge_index = data.edge_index.to(self.device)
         edge_type = data.edge_attr.to(self.device)
 
-        emb = self.model(x, edge_index, edge_type)
+        token_ids = getattr(data, 'token_ids', None)
+        token_lengths = getattr(data, 'token_lengths', None)
+        node_types_attr = getattr(data, 'node_types_attr', None)
+        if token_ids is not None:
+            token_ids = token_ids.to(self.device)
+            token_lengths = token_lengths.to(self.device)
+            node_types_attr = node_types_attr.to(self.device)
+
+        emb = self.model(x, edge_index, edge_type, token_ids, token_lengths, node_types_attr)
         loss, score = self.model.loss_func(emb[data.active_mask, :][:batch_size], train=train, visualize=visualize,
                                            label=label, fig_title=fig_title)
         del emb, edge_type, edge_index, x
