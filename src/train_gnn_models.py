@@ -56,6 +56,10 @@ parser.add_argument('--random-features', action="store_true", default=False)
 parser.add_argument('--save-emb', action="store_true", default=False)
 parser.add_argument('--debug-one-subject', action="store_true", default=False)
 parser.add_argument('--debug-subjects', type=int, default=-1)
+parser.add_argument('--use-node-attributes', action="store_true", default=False)
+parser.add_argument('--attr-vocab-size', type=int, default=5000)
+parser.add_argument('--attr-embed-dim', type=int, default=32)
+parser.add_argument('--max-path-tokens', type=int, default=8)
 
 
 init_ru_maxrss = getrusage(RUSAGE_SELF).ru_maxrss
@@ -253,7 +257,12 @@ def pyGod(run,seed):
         elif args.detector == "OCRGCN":
             detector = OCRGCN(num_relations=num_relations,hid_dim=hidden_channels,num_layers=args.num_layers,
                                             epoch=args.epochs, batch_size=batch_size, dropout=args.dropout,
-                                            lr=args.lr, contamination=contamination,save_emb = args.save_emb,beta=args.beta,warmup=args.warmup,visualize=args.visualize_training)
+                                            lr=args.lr, contamination=contamination,save_emb = args.save_emb,beta=args.beta,warmup=args.warmup,visualize=args.visualize_training,
+                                            use_node_attributes=args.use_node_attributes,
+                                            attr_vocab_size=attr_vocab_size,
+                                            attr_embed_dim=args.attr_embed_dim,
+                                            max_path_tokens=args.max_path_tokens,
+                                            num_node_types=num_node_types)
         elif args.detector == "DOMINANT":
             detector = DOMINANT(hid_dim=hidden_channels,num_layers=args.num_layers, epoch=args.epochs,
                                                batch_size=batch_size, dropout=args.dropout, lr=args.lr,
@@ -571,6 +580,32 @@ def pyGod(run,seed):
             feat[local2global[subject_node]] = temp_feat
     print("Size of input layers:", input_layer)
     homo_data.x = deepcopy(feat)
+
+    # Load node attribute tokens when --use-node-attributes is enabled
+    attr_vocab_size = args.attr_vocab_size
+    num_node_types = len(subject_nodes)
+    if args.use_node_attributes:
+        all_token_ids = torch.zeros(node_type.size(0), args.max_path_tokens, dtype=torch.long)
+        all_token_lengths = torch.ones(node_type.size(0), dtype=torch.long)
+        all_node_types_attr = torch.zeros(node_type.size(0), dtype=torch.long)
+        for subject_node in subject_nodes:
+            feat_dir = root_path + args.exp_name + "/features/" + subject_node
+            tid_path = feat_dir + "/token_ids.pt"
+            if os.path.exists(tid_path):
+                tid = torch.load(tid_path, weights_only=False)
+                tlen = torch.load(feat_dir + "/token_lengths.pt", weights_only=False)
+                ntypes = torch.load(feat_dir + "/node_types.pt", weights_only=False)
+                all_token_ids[local2global[subject_node]] = tid
+                all_token_lengths[local2global[subject_node]] = tlen
+                all_node_types_attr[local2global[subject_node]] = ntypes
+        homo_data.token_ids = all_token_ids
+        homo_data.token_lengths = all_token_lengths
+        homo_data.node_types_attr = all_node_types_attr
+
+        vocab_path = root_path + args.exp_name + "/mapping/attr_vocab.csv"
+        if os.path.exists(vocab_path):
+            vocab_df = pd.read_csv(vocab_path)
+            attr_vocab_size = len(vocab_df)
 
     # Start Training the PyGOD model
     y_true = deepcopy(homo_data.y)

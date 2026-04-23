@@ -27,6 +27,10 @@ parser.add_argument('--get-lifespan', action="store_true", default=False)
 parser.add_argument('--normalize-features', action="store_true", default=False)
 parser.add_argument('--fill-with-mean', action="store_true", default=False)
 parser.add_argument('--training-valid', action="store_true", default=False)
+parser.add_argument('--use-node-attributes', action="store_true", default=False)
+parser.add_argument('--attr-vocab-size', type=int, default=5000)
+parser.add_argument('--max-path-tokens', type=int, default=8)
+parser.add_argument('--direct-csv', action="store_true", default=False, help="Build graph directly from graph_df.csv, skip RDF triple parsing")
 from sklearn.model_selection import train_test_split
 import torch
 torch.use_deterministic_algorithms(True)
@@ -244,6 +248,89 @@ def feature_engineering(graph_df,edge_types):
 
     return x_list_df
 
+
+def tokenize_attribute(attr_str, attr_type):
+    """Tokenize node attribute string into a list of tokens."""
+    if attr_str is None or pd.isna(attr_str) or str(attr_str).strip() == '':
+        return ['<UNK>']
+    attr_str = str(attr_str).strip().lower()
+    if attr_type in ['flow', 'net', 'netflowobject']:
+        parts = attr_str.split('.')
+        return parts[:3] if len(parts) >= 3 else parts
+    elif attr_type in ['file', 'module'] or 'file' in attr_type.lower():
+        parts = [p for p in attr_str.replace('\\', '/').split('/') if p]
+        return parts[-args.max_path_tokens:] if parts else ['<UNK>']
+    else:
+        name = attr_str.replace('\\', '/').split('/')[-1]
+        return [name] if name else ['<UNK>']
+
+
+def build_attribute_vocab_and_tokens(g_tsv_df, entites_dic, label_nodes_names, output_root_path, dataset_name):
+    """Build vocabulary and generate token ID tensors for node attributes."""
+    from collections import Counter
+    node_attr_rel = prefix + "node-attribute"
+    node_type_rel = prefix + "node-type"
+
+    attr_df = g_tsv_df[g_tsv_df["p"] == node_attr_rel][["s", "o"]].drop_duplicates()
+    attr_df.columns = ["node", "attribute"]
+
+    type_df = g_tsv_df[g_tsv_df["p"] == node_type_rel][["s", "o"]].drop_duplicates()
+    type_df.columns = ["node", "type"]
+    type_df["type"] = type_df["type"].apply(lambda x: str(x).split("/")[-1])
+
+    merged = pd.merge(attr_df, type_df, on="node", how="left")
+    merged["node_uuid"] = merged["node"].apply(lambda x: str(x).split("/")[-1])
+
+    all_tokens = []
+    node_tokens = {}
+    for _, row in merged.iterrows():
+        tokens = tokenize_attribute(row["attribute"], row.get("type", ""))
+        node_tokens[row["node_uuid"]] = tokens
+        all_tokens.extend(tokens)
+
+    token_counts = Counter(all_tokens)
+    vocab_tokens = [t for t, _ in token_counts.most_common(args.attr_vocab_size - 2)]
+    vocab = {'<PAD>': 0, '<UNK>': 1}
+    for i, t in enumerate(vocab_tokens):
+        vocab[t] = i + 2
+
+    node_type_to_id = {}
+    for i, name in enumerate(label_nodes_names):
+        node_type_to_id[name] = i
+
+    for label_node in label_nodes_names:
+        file_path = output_root_path + dataset_name + "/mapping/" + label_node + "_entidx2name.csv"
+        mapping_df = pd.read_csv(file_path, header=None, skiprows=1, names=["node_id", "node_uuid"])
+
+        n_nodes = len(mapping_df)
+        token_ids = torch.zeros(n_nodes, args.max_path_tokens, dtype=torch.long)
+        token_lengths = torch.ones(n_nodes, dtype=torch.long)
+        node_types = torch.full((n_nodes,), node_type_to_id.get(label_node, 0), dtype=torch.long)
+
+        for _, row in mapping_df.iterrows():
+            nid = row["node_id"]
+            uuid = str(row["node_uuid"])
+            tokens = node_tokens.get(uuid, ['<UNK>'])
+            tokens = tokens[:args.max_path_tokens]
+            token_lengths[nid] = len(tokens)
+            for j, t in enumerate(tokens):
+                token_ids[nid, j] = vocab.get(t, 1)
+
+        save_dir = output_root_path + dataset_name + "/features/" + label_node
+        ensure_dir(save_dir + "/token_ids.pt")
+        torch.save(token_ids, save_dir + "/token_ids.pt")
+        torch.save(token_lengths, save_dir + "/token_lengths.pt")
+        torch.save(node_types, save_dir + "/node_types.pt")
+
+    vocab_df = pd.DataFrame(list(vocab.items()), columns=["token", "id"])
+    vocab_path = output_root_path + dataset_name + "/mapping/attr_vocab.csv"
+    ensure_dir(vocab_path)
+    vocab_df.to_csv(vocab_path, index=None)
+    compress_gz(vocab_path)
+
+    print(f"Built attribute vocabulary with {len(vocab)} tokens")
+    print(f"Max path tokens: {args.max_path_tokens}")
+    return len(vocab), len(node_type_to_id)
 
 
 if __name__ == '__main__':
@@ -524,6 +611,11 @@ if __name__ == '__main__':
         ensure_dir(save_path)
         torch.save(x_list_tensor, save_path)
     print("Feature engineering time:",time.time() - features_time," seconds")
+    if args.use_node_attributes:
+        attr_vocab_size, num_node_types = build_attribute_vocab_and_tokens(
+            g_tsv_df, entites_dic, label_nodes_names, output_root_path, dataset_name
+        )
+        print(f"Attribute vocab size: {attr_vocab_size}, Node types: {num_node_types}")
     shutil.make_archive(output_root_path + dataset_name, 'zip',
                         root_dir=output_root_path, base_dir=dataset_name)
     print("Total Converting time:", time.time() - start_convert, " seconds")
