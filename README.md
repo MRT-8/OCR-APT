@@ -40,11 +40,12 @@ The system is composed of multiple Python and Bash scripts that work together.
 
 ## Setup OCR-APT
 
-1. **Create the Conda environment**  
-   Install Conda, then from inside the `bash_src` directory run the following commands to create and activate the environment using `requirements.txt`:
-```bash
-   conda create -n env-ocrapt python=3.9
-   conda activate env-ocrapt
+1. **Create the Python environment (using uv)**  
+   Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then run the following commands to create and activate the virtual environment:
+   ```bash
+   uv venv --python 3.9
+   source .venv/bin/activate
+   cd bash_src/
    bash create_env.sh
    ```
 

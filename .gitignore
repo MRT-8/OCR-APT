@@ -1,2 +1,6 @@
 dataset/
 GraphDB_repositories/
+__pycache__/
+*.pyc
+.venv/
+config.json
