@@ -75,7 +75,7 @@ parser.add_argument('--construct-from-anomaly-subgraph', action="store_true", de
 parser.add_argument('--remove-duplicated-subgraph', action="store_true", default=True)
 parser.add_argument('--correlate-anomalous-once', action="store_true", default=True)
 parser.add_argument('--process-centric', action="store_true", default=False)
-parser.add_argument('--dedup-method', type=str, default='minhash', choices=['legacy', 'minhash', 'wlhash'],
+parser.add_argument('--dedup-method', type=str, default='legacy', choices=['legacy', 'minhash', 'wlhash'],
                     help="Subgraph dedup method: legacy=O(n^2), minhash=MinHash-LSH, wlhash=WL graph hash")
 
 args = parser.parse_args()

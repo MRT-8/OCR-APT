@@ -30,7 +30,6 @@ parser.add_argument('--training-valid', action="store_true", default=False)
 parser.add_argument('--use-node-attributes', action="store_true", default=False)
 parser.add_argument('--attr-vocab-size', type=int, default=5000)
 parser.add_argument('--max-path-tokens', type=int, default=8)
-parser.add_argument('--direct-csv', action="store_true", default=False, help="Build graph directly from graph_df.csv, skip RDF triple parsing")
 from sklearn.model_selection import train_test_split
 import torch
 torch.use_deterministic_algorithms(True)

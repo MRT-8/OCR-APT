@@ -100,7 +100,7 @@ parser.add_argument('--anomalous', type=str, default=None)
 parser.add_argument('--load-index', action="store_true", default=False)
 parser.add_argument('--runs', type=int, default=1)
 parser.add_argument('--standard-prompt', action="store_true", default=False)
-parser.add_argument('--hallucination-detection', type=str, default='enhanced',
+parser.add_argument('--hallucination-detection', type=str, default='basic',
                     choices=['basic', 'enhanced'],
                     help="Hallucination detection: basic=substring match, enhanced=multi-layer verification")
 
