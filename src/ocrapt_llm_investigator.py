@@ -100,6 +100,9 @@ parser.add_argument('--anomalous', type=str, default=None)
 parser.add_argument('--load-index', action="store_true", default=False)
 parser.add_argument('--runs', type=int, default=1)
 parser.add_argument('--standard-prompt', action="store_true", default=False)
+parser.add_argument('--hallucination-detection', type=str, default='enhanced',
+                    choices=['basic', 'enhanced'],
+                    help="Hallucination detection: basic=substring match, enhanced=multi-layer verification")
 
 args = parser.parse_args()
 assert args.dataset in ['tc3', 'optc', 'nodlink']
@@ -499,21 +502,103 @@ def retrieve_IOC_list(chat_engine,retrieve_prompt,processed_report=None,filter_h
     if filter_hallucination == False:
         ioc_lst = deepcopy(iocs_list)
     else:
-        ioc_lst = detect_and_filter_hallucination(iocs_list,processed_report)
+        ioc_lst = detect_and_filter_hallucination(iocs_list, processed_report,
+                                                   method=args.hallucination_detection)
     return ioc_lst
 
-def detect_and_filter_hallucination(iocs_list,processed_report):
-    print("Filter hallucination from IOCs list")
+def detect_and_filter_hallucination(iocs_list, processed_report, method='basic'):
+    """Detect and filter hallucinated IoCs."""
+    if method == 'basic':
+        return _hallucination_basic(iocs_list, processed_report)
+    else:
+        return _hallucination_enhanced(iocs_list, processed_report)
+
+
+def _hallucination_basic(iocs_list, processed_report):
+    """Original substring matching method."""
+    print("Filter hallucination from IOCs list (basic mode)")
     n_hallucination = 0
     filtered_ioc_lst = deepcopy(iocs_list)
     for ioc in iocs_list:
-        matched_ioc = processed_report[processed_report["description"].str.contains(ioc,case=False,regex=False)]
+        matched_ioc = processed_report[processed_report["description"].str.contains(ioc, case=False, regex=False)]
         if len(matched_ioc) == 0:
             print("***** Model Hallucination ********")
-            print(ioc,"doesn't exist in the document.\n It will be dropped from the list")
-            n_hallucination +=1
+            print(ioc, "doesn't exist in the document.\n It will be dropped from the list")
+            n_hallucination += 1
             filtered_ioc_lst.remove(ioc)
     print("Number of detected hallucinations is: ", n_hallucination)
+    return filtered_ioc_lst
+
+
+def _hallucination_enhanced(iocs_list, processed_report):
+    """Enhanced multi-layer hallucination detection."""
+    print("Filter hallucination from IOCs list (enhanced mode)")
+    n_hallucination = 0
+    hallucination_details = []
+    filtered_ioc_lst = deepcopy(iocs_list)
+
+    for ioc in iocs_list:
+        is_hallucination = False
+        reason = ""
+
+        # Layer 1: Entity existence verification (original method)
+        matched_ioc = processed_report[processed_report["description"].str.contains(
+            ioc, case=False, regex=False)]
+        if len(matched_ioc) == 0:
+            # Layer 1b: Fuzzy matching for slight LLM variations
+            ioc_parts = ioc.replace('.', ' ').replace('/', ' ').replace('\\', ' ').split()
+            partial_match = False
+            for part in ioc_parts:
+                if len(part) >= 3:
+                    partial = processed_report[processed_report["description"].str.contains(
+                        part, case=False, regex=False)]
+                    if len(partial) > 0:
+                        partial_match = True
+                        break
+            if not partial_match:
+                is_hallucination = True
+                reason = "entity_not_found"
+
+        # Layer 2: Relationship verification
+        if not is_hallucination and len(matched_ioc) > 0:
+            ioc_lower = ioc.lower()
+            ip_pattern = re.compile(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$')
+            if ip_pattern.match(ioc_lower):
+                network_actions = ['connect', 'send', 'recv', 'accept', 'close']
+                network_match = processed_report[
+                    processed_report["description"].str.contains(ioc, case=False, regex=False) &
+                    processed_report["description"].str.contains('|'.join(network_actions), case=False, regex=True)
+                ]
+                if len(network_match) == 0:
+                    print(f"Warning: IoC '{ioc}' found but lacks network action context")
+
+        # Layer 3: Timeline consistency
+        if not is_hallucination and len(matched_ioc) > 0 and 'timestamp' in processed_report.columns:
+            try:
+                ioc_timestamps = matched_ioc['timestamp']
+                all_timestamps = processed_report['timestamp']
+                if hasattr(all_timestamps, 'min') and hasattr(all_timestamps, 'max'):
+                    t_min = all_timestamps.min()
+                    t_max = all_timestamps.max()
+                    ioc_t_min = ioc_timestamps.min()
+                    ioc_t_max = ioc_timestamps.max()
+                    if ioc_t_min < t_min or ioc_t_max > t_max:
+                        print(f"Warning: IoC '{ioc}' has timestamps outside data range")
+            except Exception:
+                pass
+
+        if is_hallucination:
+            print(f"***** Model Hallucination ({reason}) ********")
+            print(f"{ioc} doesn't exist in the document. It will be dropped from the list")
+            n_hallucination += 1
+            filtered_ioc_lst.remove(ioc)
+            hallucination_details.append({"ioc": ioc, "reason": reason})
+
+    print(f"Number of detected hallucinations: {n_hallucination}")
+    if hallucination_details:
+        print("Hallucination details:")
+        for h in hallucination_details:
+            print(f"  - {h['ioc']}: {h['reason']}")
     return filtered_ioc_lst
 
 def extract_IOC_list(iocs_str):

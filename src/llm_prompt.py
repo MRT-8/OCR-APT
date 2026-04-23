@@ -78,6 +78,14 @@ def get_llm_prompts():
     Don't select any visited IoC, visited IoCs are: {VISITED_IOC}. \n
     Return the IoC only, formatted as ["IoC"].\n
 
-    """
+    """,
+        "self_verify_iocs": """
+    Review the following IoC list extracted from the attack report.
+    For each IoC, verify that it actually appears in the original log data provided earlier.
+    Remove any IoCs that you cannot directly trace to specific log entries.
+    Return only verified IoCs as a Python list: ["IoC1", "IoC2", ...].
+
+    IoC list to verify: [{IOC_LIST}]
+    """,
     }
     return All_Prompts
